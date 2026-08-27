@@ -308,17 +308,26 @@ class TokenService(TokenServiceProtocol):
             This method gets the identity-provider-name prefix from database and removes that from the username
             to get the user email back.
 
+            Supports multiple SAML/OIDC providers on the same Cognito User Pool by falling back to
+            generic prefix stripping when the configured provider name does not match.
+
             :param token_username
             :return email
         """
 
         if self._context.config().get_bool('identity-provider.cognito.sso_enabled', required=True):
             identity_provider_name = self._context.config().get_string('identity-provider.cognito.sso_idp_provider_name', required=True)
+            # Try configured provider prefix first
             identity_provider_prefix = (identity_provider_name + "_").lower()
-            email = None
-            if token_username.startswith(identity_provider_prefix):
-                email = token_username.replace(identity_provider_prefix, "", 1)
-            return email
+            if token_username.lower().startswith(identity_provider_prefix):
+                return token_username[len(identity_provider_prefix):]
+            # Fallback: strip any provider prefix (text before first _) and
+            # return the remainder if it looks like an email address
+            if '_' in token_username:
+                possible_email = token_username.split('_', 1)[1]
+                if '@' in possible_email:
+                    return possible_email
+            return None
 
     def is_token_expired(self, token: str) -> bool:
         """
