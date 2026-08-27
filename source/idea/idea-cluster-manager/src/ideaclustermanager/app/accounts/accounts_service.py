@@ -302,6 +302,94 @@ class AccountsService:
         accounts.update_user({'username': username, 'enabled': False}, force=True)
         self.evdi_client.publish_user_disabled_event(username=username)
 
+    def create_user(self, request) -> User:
+        """Create a new user account (DDB record + optional Cognito user).
+
+        Supports both SSO pre-provisioning (admin adds user before first login)
+        and native Cognito user creation (with password).
+        """
+        user = request.user
+        if not user:
+            raise exceptions.invalid_params('user is required')
+        if Utils.is_empty(user.email):
+            raise exceptions.invalid_params('email is required')
+
+        # Derive username from email if not provided
+        if Utils.is_empty(user.username):
+            user.username = user.email.split('@')[0].replace('.', '')
+
+        username = AuthUtils.sanitize_username(user.username)
+        email = AuthUtils.sanitize_email(user.email)
+
+        # Determine identity source
+        is_native = Utils.is_not_empty(user.password)
+        identity_source = constants.COGNITO_USER_IDP_TYPE if is_native else constants.SSO_USER_IDP_TYPE
+
+        # Create DDB record
+        user_dict = {
+            'username': username,
+            'email': email,
+            'role': user.role or 'user',
+            'identity_source': identity_source,
+            'login_shell': user.login_shell or '/bin/bash',
+            'home_dir': user.home_dir or f'/home/{username}',
+            'sudo': user.sudo or False,
+            'is_active': True,
+            'enabled': True,
+        }
+
+        if user.uid:
+            user_dict['uid'] = user.uid
+        if user.gid:
+            user_dict['gid'] = user.gid
+        if user.additional_groups:
+            user_dict['additional_groups'] = user.additional_groups
+
+        created_user = accounts.create_user(user_dict)
+
+        # For native users, also create in Cognito
+        if is_native:
+            uid = str(created_user.get('uid', ''))
+            email_verified = request.email_verified or False
+            self.user_pool.admin_create_user(
+                username=username,
+                uid=uid,
+                email=email,
+                password=user.password,
+                email_verified=email_verified
+            )
+
+        self.logger.info(f'Created user {username} (source: {identity_source})')
+        return UserDAO.convert_from_db(created_user)
+
+    def delete_managed_user(self, username: str):
+        """Delete a user from DDB and Cognito. Does not modify AD.
+
+        AD user cleanup (if needed) should be handled separately
+        by the AD sync process or admin tooling.
+        """
+        if Utils.is_empty(username):
+            raise exceptions.invalid_params('username is required')
+
+        username = AuthUtils.sanitize_username(username)
+
+        if self.is_cluster_administrator(username):
+            raise AuthUtils.invalid_operation('Cluster Administrator cannot be deleted.')
+
+        # Publish disable event (terminates active sessions)
+        self.evdi_client.publish_user_disabled_event(username=username)
+
+        # Delete from Cognito (both native and federated shadow)
+        try:
+            self.user_pool.admin_delete_user(username)
+        except Exception as e:
+            self.logger.warning(f'Failed to delete Cognito user {username}: {e}')
+
+        # Delete from DDB (handles group removal, project assignments)
+        accounts.delete_user({'username': username})
+
+        self.logger.info(f'Deleted user {username}')
+
     def reset_password(self, username: str):
         username = AuthUtils.sanitize_username(username)
         if Utils.is_empty(username):

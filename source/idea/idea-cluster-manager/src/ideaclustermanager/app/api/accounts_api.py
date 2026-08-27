@@ -17,6 +17,10 @@ from ideadatamodel.auth import (
     ConfirmSignUpResult,
     ResendConfirmationCodeRequest,
     ResendConfirmationCodeResult,
+    CreateUserRequest,
+    CreateUserResult,
+    DeleteUserRequest,
+    DeleteUserResult,
     GetUserRequest,
     GetUserResult,
     GetUserByEmailRequest,
@@ -139,6 +143,14 @@ class AccountsAPI(BaseAPI):
             'Accounts.ResetPassword': {
                 'scope': self.SCOPE_WRITE,
                 'method': self.reset_password
+            },
+            'Accounts.CreateUser': {
+                'scope': self.SCOPE_WRITE,
+                'method': self.create_user
+            },
+            'Accounts.DeleteUser': {
+                'scope': self.SCOPE_WRITE,
+                'method': self.delete_user
             }
         }
 
@@ -278,6 +290,16 @@ class AccountsAPI(BaseAPI):
             user=user
         ))
 
+    def create_user(self, context: ApiInvocationContext):
+        request = context.get_request_payload_as(CreateUserRequest)
+        user = self.context.accounts.create_user(request)
+        context.success(CreateUserResult(user=user))
+
+    def delete_user(self, context: ApiInvocationContext):
+        request = context.get_request_payload_as(DeleteUserRequest)
+        self.context.accounts.delete_managed_user(request.username)
+        context.success(DeleteUserResult())
+
     @staticmethod
     def check_admin_authorization_services(context: ApiInvocationContext):
         """
@@ -291,7 +313,9 @@ class AccountsAPI(BaseAPI):
         is_admin_authorization_required = namespace in (
             'Accounts.AddAdminUser',
             'Accounts.RemoveAdminUser',
-            'Accounts.ModifyUser'
+            'Accounts.ModifyUser',
+            'Accounts.CreateUser',
+            'Accounts.DeleteUser'
         )
 
         if not is_admin_authorization_required:
