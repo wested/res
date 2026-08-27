@@ -20,7 +20,7 @@ import { User } from "../../client/data-model";
 import { AccountsClient } from "../../client";
 import Utils from "../../common/utils";
 import IdeaConfirm from "../../components/modals";
-import { StatusIndicator } from "@cloudscape-design/components";
+import { Box, Button, FormField, Input, Modal, Select, SpaceBetween, StatusIndicator } from "@cloudscape-design/components";
 import { IdeaSideNavigationProps } from "../../components/side-navigation";
 import IdeaAppLayout, { IdeaAppLayoutProps } from "../../components/app-layout";
 import { withRouter } from "../../navigation/navigation-utils";
@@ -30,6 +30,12 @@ export interface UsersProps extends IdeaAppLayoutProps, IdeaSideNavigationProps 
 
 export interface UsersState {
     userSelected: boolean;
+    showCreateUserModal: boolean;
+    showDeleteUserModal: boolean;
+    createUserEmail: string;
+    createUserRole: string;
+    createUserLoading: boolean;
+    deleteUserLoading: boolean;
 }
 
 const RES_SPECIFIC_NON_PROJECT_GROUPS = ["cluster-manager-administrators-module-group", "cluster-manager-users-module-group", "managers-cluster-group", "scheduler-administrators-module-group", "scheduler-users-module-group", "vdc-administrators-module-group", "vdc-users-module-group"];
@@ -136,6 +142,12 @@ class Users extends Component<UsersProps, UsersState> {
         this.listing = React.createRef();
         this.state = {
             userSelected: false,
+            showCreateUserModal: false,
+            showDeleteUserModal: false,
+            createUserEmail: "",
+            createUserRole: "user",
+            createUserLoading: false,
+            deleteUserLoading: false,
         };
     }
 
@@ -290,6 +302,123 @@ class Users extends Component<UsersProps, UsersState> {
         return selectedUser.enabled!;
     }
 
+    buildCreateUserModal() {
+        return (
+            <Modal
+                visible={this.state.showCreateUserModal}
+                onDismiss={() => this.setState({ showCreateUserModal: false })}
+                header="Add User"
+                footer={
+                    <Box float="right">
+                        <SpaceBetween direction="horizontal" size="xs">
+                            <Button variant="link" onClick={() => this.setState({ showCreateUserModal: false })}>Cancel</Button>
+                            <Button
+                                variant="primary"
+                                loading={this.state.createUserLoading}
+                                onClick={() => {
+                                    const email = this.state.createUserEmail.trim();
+                                    if (!email) {
+                                        this.setFlashMessage("Email is required.", "error");
+                                        return;
+                                    }
+                                    this.setState({ createUserLoading: true });
+                                    this.authAdmin()
+                                        .createUser({
+                                            user: {
+                                                email: email,
+                                                role: this.state.createUserRole,
+                                            },
+                                        })
+                                        .then((_) => {
+                                            this.setState({
+                                                showCreateUserModal: false,
+                                                createUserEmail: "",
+                                                createUserRole: "user",
+                                                createUserLoading: false,
+                                            });
+                                            this.getListing().fetchRecords();
+                                            this.setFlashMessage(`User created successfully.`, "success");
+                                        })
+                                        .catch((error) => {
+                                            this.setState({ createUserLoading: false });
+                                            this.setFlashMessage(`Failed to create user: ${error.message}`, "error");
+                                        });
+                                }}
+                            >
+                                Create
+                            </Button>
+                        </SpaceBetween>
+                    </Box>
+                }
+            >
+                <SpaceBetween size="m">
+                    <FormField label="Email" description="User's email address. Username will be derived from the email prefix (max 20 chars).">
+                        <Input
+                            value={this.state.createUserEmail}
+                            onChange={(e) => this.setState({ createUserEmail: e.detail.value })}
+                            placeholder="user@example.com"
+                            type="email"
+                        />
+                    </FormField>
+                    <FormField label="Role">
+                        <Select
+                            selectedOption={{ label: this.state.createUserRole, value: this.state.createUserRole }}
+                            onChange={(e) => this.setState({ createUserRole: e.detail.selectedOption.value! })}
+                            options={[
+                                { label: "user", value: "user" },
+                                { label: "admin", value: "admin" },
+                            ]}
+                        />
+                    </FormField>
+                </SpaceBetween>
+            </Modal>
+        );
+    }
+
+    buildDeleteUserModal() {
+        const selectedUser = this.getSelectedUser();
+        return (
+            <Modal
+                visible={this.state.showDeleteUserModal}
+                onDismiss={() => this.setState({ showDeleteUserModal: false })}
+                header="Delete User"
+                footer={
+                    <Box float="right">
+                        <SpaceBetween direction="horizontal" size="xs">
+                            <Button variant="link" onClick={() => this.setState({ showDeleteUserModal: false })}>Cancel</Button>
+                            <Button
+                                variant="primary"
+                                loading={this.state.deleteUserLoading}
+                                onClick={() => {
+                                    if (!selectedUser) return;
+                                    this.setState({ deleteUserLoading: true });
+                                    this.authAdmin()
+                                        .deleteUser({
+                                            username: selectedUser.username,
+                                        })
+                                        .then((_) => {
+                                            this.setState({ showDeleteUserModal: false, deleteUserLoading: false, userSelected: false });
+                                            this.getListing().fetchRecords();
+                                            this.setFlashMessage(`User ${selectedUser.username} deleted successfully.`, "success");
+                                        })
+                                        .catch((error) => {
+                                            this.setState({ deleteUserLoading: false });
+                                            this.setFlashMessage(`Failed to delete user: ${error.message}`, "error");
+                                        });
+                                }}
+                            >
+                                Delete
+                            </Button>
+                        </SpaceBetween>
+                    </Box>
+                }
+            >
+                <p>Are you sure you want to permanently delete user <b>{selectedUser?.username}</b>?</p>
+                <p>This will remove the user from all projects and terminate any active VDI sessions.</p>
+            </Modal>
+        );
+    }
+
     buildListing() {
         return (
             <IdeaListView
@@ -299,6 +428,13 @@ class Users extends Component<UsersProps, UsersState> {
                 title="Users"
                 description="Environment user management"
                 selectionType="single"
+                primaryAction={{
+                    id: "add-user",
+                    text: "Add User",
+                    onClick: () => {
+                        this.setState({ showCreateUserModal: true });
+                    },
+                }}
                 secondaryActionsDisabled={!this.isSelected()}
                 secondaryActions={[
                     {
@@ -313,6 +449,13 @@ class Users extends Component<UsersProps, UsersState> {
                         text: this.isSelectedUserEnabled() ? "Disable User" : "Enable User",
                         onClick: () => {
                             this.getToggleUserEnabledConfirmModal().show();
+                        },
+                    },
+                    {
+                        id: "delete-user",
+                        text: "Delete User",
+                        onClick: () => {
+                            this.setState({ showDeleteUserModal: true });
                         },
                     },
                 ]}
@@ -393,6 +536,8 @@ class Users extends Component<UsersProps, UsersState> {
                     <div>
                         {this.buildToggleAdminUserConfirmModal()}
                         {this.buildToggleUserEnabledConfirmModal()}
+                        {this.buildCreateUserModal()}
+                        {this.buildDeleteUserModal()}
                         {this.buildListing()}
                     </div>
                 }
